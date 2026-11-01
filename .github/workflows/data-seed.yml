@@ -1,0 +1,99 @@
+name: T610YP Data seed
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_gib:
+        description: Logical APFS Data size in GiB (3 to 18)
+        required: true
+        default: "8"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  data-seed:
+    runs-on: macos-26
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+        working-directory: unixnu
+    steps:
+      - name: Check out pinned UniXNU
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: UniXNU/UniXNU
+          ref: f0721e9745c45ad2600cd69c74730f1cca55d56a
+          path: unixnu
+          persist-credentials: false
+
+      - name: Prepare DarwinBoot tools and validate size
+        env:
+          DATA_GIB: ${{ inputs.data_gib }}
+        run: |
+          set -euo pipefail
+          [[ "$DATA_GIB" =~ ^([3-9]|1[0-8])$ ]] || {
+            echo "::error::data_gib must be a whole number from 3 to 18"
+            exit 1
+          }
+          git submodule update --init --depth 1 drivers/DarwinBoot
+          mkdir -p build .cache/firmware/target-volumes
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Download and verify OS image
+        run: |
+          set -euo pipefail
+          url='https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw'
+          curl --fail --location --retry 3 --connect-timeout 30 \
+            "$url" --output "$RUNNER_TEMP/restore.ipsw"
+          python3 scripts/extract-target-volume.py OS --ipsw "$RUNNER_TEMP/restore.ipsw"
+          os_image=.cache/firmware/target-volumes/044-76040-038.dmg
+          printf '%s  %s\n' \
+            3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d \
+            "$os_image" | shasum -a 256 --check
+
+      - name: Create APFS Data seed
+        run: |
+          set -euo pipefail
+          mountpoint="$PWD/.cache/firmware/target-volumes/os-mount"
+          mkdir -p "$mountpoint"
+          attached=0
+          cleanup() {
+            if [ "$attached" = 1 ]; then
+              hdiutil detach "$mountpoint" || hdiutil detach -force "$mountpoint"
+            fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" \
+            .cache/firmware/target-volumes/044-76040-038.dmg
+          attached=1
+          python3 scripts/prepare-owner-data-fixture.py
+
+      - name: Pack and grow Data seed
+        env:
+          DATA_GIB: ${{ inputs.data_gib }}
+        run: |
+          set -euo pipefail
+          python3 drivers/DarwinBoot/Test/packed_ramdisk.py \
+            build/owner-data-fixture/owner-data-32.cdr \
+            build/owner-data-fixture/owner-data-base.dbr
+          python3 scripts/seed-data-grow.py --gib "$DATA_GIB" \
+            build/owner-data-fixture/owner-data-base.dbr \
+            build/owner-data-fixture/owner-data.dbr \
+            > build/owner-data-fixture/grow-report.json
+          cd build/owner-data-fixture
+          shasum -a 256 owner-data.dbr seed.json grow-report.json > SHA256SUMS
+
+      - name: Upload Data seed
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: t610yp-data-seed-${{ inputs.data_gib }}g
+          path: |
+            unixnu/build/owner-data-fixture/owner-data.dbr
+            unixnu/build/owner-data-fixture/seed.json
+            unixnu/build/owner-data-fixture/grow-report.json
+            unixnu/build/owner-data-fixture/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
