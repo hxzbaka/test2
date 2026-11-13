@@ -8,6 +8,11 @@ on:
         required: true
         default: "8"
         type: string
+      skip_setup:
+        description: Also generate a seed with Setup marked complete
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -86,6 +91,18 @@ jobs:
           cd build/owner-data-fixture
           shasum -a 256 owner-data.dbr seed.json grow-report.json > SHA256SUMS
 
+      - name: Generate skip-Setup Data seed
+        if: ${{ inputs.skip_setup }}
+        run: |
+          set -euo pipefail
+          python3 scripts/seed-data-skip-setup.py \
+            build/owner-data-fixture/owner-data.dbr \
+            build/owner-data-fixture/owner-data-skip-setup.dbr \
+            --no-auto-dim
+          cd build/owner-data-fixture
+          shasum -a 256 owner-data-skip-setup.dbr \
+            owner-data-skip-setup.json > SKIP-SETUP-SHA256SUMS
+
       - name: Upload Data seed
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -95,5 +112,17 @@ jobs:
             unixnu/build/owner-data-fixture/seed.json
             unixnu/build/owner-data-fixture/grow-report.json
             unixnu/build/owner-data-fixture/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload skip-Setup Data seed
+        if: ${{ inputs.skip_setup }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: t610yp-data-seed-skip-setup-${{ inputs.data_gib }}g
+          path: |
+            unixnu/build/owner-data-fixture/owner-data-skip-setup.dbr
+            unixnu/build/owner-data-fixture/owner-data-skip-setup.json
+            unixnu/build/owner-data-fixture/SKIP-SETUP-SHA256SUMS
           if-no-files-found: error
           retention-days: 7
