@@ -11,6 +11,7 @@ on:
         options:
           - ipados-17.7.11
           - iphone-17.7
+          - iphone-x-16.7.16
       data_gib:
         description: Logical APFS Data size in GiB (3 to 18)
         required: true
@@ -73,12 +74,19 @@ jobs:
             iphone-17.7)
               url='https://updates.cdn-apple.com/2024FallFCS/fullrestores/062-78994/7B1C92E8-587E-4F7E-BB51-1DCADA45517B/iPhone12,1_17.7_21H16_Restore.ipsw'
               ;;
+            iphone-x-16.7.16)
+              url='https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw'
+              ;;
             *) echo "::error::Unsupported OS target"; exit 1 ;;
           esac
           curl --fail --location --retry 3 --connect-timeout 30 \
             "$url" --output "$RUNNER_TEMP/restore.ipsw"
           if [ "$OS_TARGET" = iphone-17.7 ]; then
             python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" extract \
+              "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg
+            echo "OS_IMAGE=.cache/firmware/target-volumes/iphone-os.dmg" >> "$GITHUB_ENV"
+          elif [ "$OS_TARGET" = iphone-x-16.7.16 ]; then
+            python3 "$GITHUB_WORKSPACE/device/scripts/ios16-seed.py" extract \
               "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg
             echo "OS_IMAGE=.cache/firmware/target-volumes/iphone-os.dmg" >> "$GITHUB_ENV"
           else
@@ -110,6 +118,9 @@ jobs:
           if [ "$OS_TARGET" = iphone-17.7 ]; then
             python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" adapt "$PWD"
             python3 scripts/t610yp-iphone-prepare-owner-data-fixture.py
+          elif [ "$OS_TARGET" = iphone-x-16.7.16 ]; then
+            python3 "$GITHUB_WORKSPACE/device/scripts/ios16-seed.py" adapt "$PWD"
+            python3 scripts/t610yp-ios16-prepare-owner-data-fixture.py
           else
             python3 scripts/prepare-owner-data-fixture.py
           fi
@@ -138,6 +149,8 @@ jobs:
           skip_script=scripts/seed-data-skip-setup.py
           if [ "$OS_TARGET" = iphone-17.7 ]; then
             skip_script=scripts/t610yp-iphone-seed-data-skip-setup.py
+          elif [ "$OS_TARGET" = iphone-x-16.7.16 ]; then
+            skip_script=scripts/t610yp-ios16-seed-data-skip-setup.py
           fi
           python3 "$skip_script" \
             build/owner-data-fixture/owner-data.dbr \
