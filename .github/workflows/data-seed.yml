@@ -3,6 +3,14 @@ name: T610YP Data seed
 on:
   workflow_dispatch:
     inputs:
+      os_target:
+        description: System image used to prepare Data
+        required: true
+        default: ipados-17.7.11
+        type: choice
+        options:
+          - ipados-17.7.11
+          - iphone-17.7
       data_gib:
         description: Logical APFS Data size in GiB (3 to 18)
         required: true
@@ -26,6 +34,12 @@ jobs:
         shell: bash
         working-directory: unixnu
     steps:
+      - name: Check out T610YP seed adapter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: device
+          persist-credentials: false
+
       - name: Check out pinned UniXNU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -48,18 +62,37 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
       - name: Download and verify OS image
+        env:
+          OS_TARGET: ${{ inputs.os_target }}
         run: |
           set -euo pipefail
-          url='https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw'
+          case "$OS_TARGET" in
+            ipados-17.7.11)
+              url='https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw'
+              ;;
+            iphone-17.7)
+              url='https://updates.cdn-apple.com/2024FallFCS/fullrestores/062-78994/7B1C92E8-587E-4F7E-BB51-1DCADA45517B/iPhone12,1_17.7_21H16_Restore.ipsw'
+              ;;
+            *) echo "::error::Unsupported OS target"; exit 1 ;;
+          esac
           curl --fail --location --retry 3 --connect-timeout 30 \
             "$url" --output "$RUNNER_TEMP/restore.ipsw"
-          python3 scripts/extract-target-volume.py OS --ipsw "$RUNNER_TEMP/restore.ipsw"
-          os_image=.cache/firmware/target-volumes/044-76040-038.dmg
-          printf '%s  %s\n' \
-            3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d \
-            "$os_image" | shasum -a 256 --check
+          if [ "$OS_TARGET" = iphone-17.7 ]; then
+            python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" extract \
+              "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg
+            echo "OS_IMAGE=.cache/firmware/target-volumes/iphone-os.dmg" >> "$GITHUB_ENV"
+          else
+            python3 scripts/extract-target-volume.py OS --ipsw "$RUNNER_TEMP/restore.ipsw"
+            os_image=.cache/firmware/target-volumes/044-76040-038.dmg
+            printf '%s  %s\n' \
+              3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d \
+              "$os_image" | shasum -a 256 --check
+            echo "OS_IMAGE=$os_image" >> "$GITHUB_ENV"
+          fi
 
       - name: Create APFS Data seed
+        env:
+          OS_TARGET: ${{ inputs.os_target }}
         run: |
           set -euo pipefail
           mountpoint="$PWD/.cache/firmware/target-volumes/os-mount"
@@ -72,9 +105,14 @@ jobs:
           }
           trap cleanup EXIT
           hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" \
-            .cache/firmware/target-volumes/044-76040-038.dmg
+            "$OS_IMAGE"
           attached=1
-          python3 scripts/prepare-owner-data-fixture.py
+          if [ "$OS_TARGET" = iphone-17.7 ]; then
+            python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" adapt "$PWD"
+            python3 scripts/t610yp-iphone-prepare-owner-data-fixture.py
+          else
+            python3 scripts/prepare-owner-data-fixture.py
+          fi
 
       - name: Pack and grow Data seed
         env:
@@ -93,9 +131,15 @@ jobs:
 
       - name: Generate skip-Setup Data seed
         if: ${{ inputs.skip_setup }}
+        env:
+          OS_TARGET: ${{ inputs.os_target }}
         run: |
           set -euo pipefail
-          python3 scripts/seed-data-skip-setup.py \
+          skip_script=scripts/seed-data-skip-setup.py
+          if [ "$OS_TARGET" = iphone-17.7 ]; then
+            skip_script=scripts/t610yp-iphone-seed-data-skip-setup.py
+          fi
+          python3 "$skip_script" \
             build/owner-data-fixture/owner-data.dbr \
             build/owner-data-fixture/owner-data-skip-setup.dbr \
             --no-auto-dim
@@ -106,7 +150,7 @@ jobs:
       - name: Upload Data seed
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: t610yp-data-seed-${{ inputs.data_gib }}g
+          name: t610yp-${{ inputs.os_target }}-data-seed-${{ inputs.data_gib }}g
           path: |
             unixnu/build/owner-data-fixture/owner-data.dbr
             unixnu/build/owner-data-fixture/seed.json
@@ -119,7 +163,7 @@ jobs:
         if: ${{ inputs.skip_setup }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: t610yp-data-seed-skip-setup-${{ inputs.data_gib }}g
+          name: t610yp-${{ inputs.os_target }}-data-seed-skip-setup-${{ inputs.data_gib }}g
           path: |
             unixnu/build/owner-data-fixture/owner-data-skip-setup.dbr
             unixnu/build/owner-data-fixture/owner-data-skip-setup.json
