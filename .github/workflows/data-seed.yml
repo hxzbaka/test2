@@ -38,6 +38,7 @@ jobs:
       - name: Check out T610YP seed adapter
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.sha }}
           path: device
           persist-credentials: false
 
@@ -49,15 +50,33 @@ jobs:
           path: unixnu
           persist-credentials: false
 
-      - name: Prepare DarwinBoot tools and validate size
+      - name: Validate inputs and prepare DarwinBoot tools
         env:
           DATA_GIB: ${{ inputs.data_gib }}
+          OS_TARGET: ${{ inputs.os_target }}
+          SKIP_SETUP: ${{ inputs.skip_setup }}
         run: |
           set -euo pipefail
           [[ "$DATA_GIB" =~ ^([3-9]|1[0-8])$ ]] || {
             echo "::error::data_gib must be a whole number from 3 to 18"
             exit 1
           }
+          adapter="$GITHUB_WORKSPACE/device/scripts/data-seed-adapter.py"
+          commit="$(git -C "$GITHUB_WORKSPACE/device" rev-parse HEAD)"
+          check_adapter() {
+            local help
+            if ! help="$(python3 "$adapter" "$1" --help)" || [[ "$help" != *"$OS_TARGET"* ]]; then
+              echo "::error file=scripts/data-seed-adapter.py::Seed adapter at $commit does not support $1 for $OS_TARGET. Commit the workflow and adapter together, then start a new run."
+              exit 1
+            fi
+          }
+          if [ "$OS_TARGET" != ipados-17.7.11 ]; then
+            check_adapter extract
+            check_adapter prepare
+          fi
+          if [ "$SKIP_SETUP" = true ]; then
+            check_adapter adapt-skip-setup
+          fi
           git submodule update --init --depth 1 drivers/DarwinBoot
           mkdir -p build .cache/firmware/target-volumes
           df -h "$GITHUB_WORKSPACE"
@@ -82,7 +101,7 @@ jobs:
           curl --fail --location --retry 3 --connect-timeout 30 \
             "$url" --output "$RUNNER_TEMP/restore.ipsw"
           if [ "$OS_TARGET" != ipados-17.7.11 ]; then
-            python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" extract \
+            python3 "$GITHUB_WORKSPACE/device/scripts/data-seed-adapter.py" extract \
               "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg \
               --target "$OS_TARGET"
             echo "OS_IMAGE=.cache/firmware/target-volumes/iphone-os.dmg" >> "$GITHUB_ENV"
@@ -102,7 +121,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$OS_TARGET" != ipados-17.7.11 ]; then
-            python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" prepare "$PWD" \
+            python3 "$GITHUB_WORKSPACE/device/scripts/data-seed-adapter.py" prepare "$PWD" \
               "$OS_IMAGE" --target "$OS_TARGET"
           else
             mountpoint="$PWD/.cache/firmware/target-volumes/os-mount"
@@ -151,7 +170,7 @@ jobs:
           OS_TARGET: ${{ inputs.os_target }}
         run: |
           set -euo pipefail
-          python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" adapt-skip-setup "$PWD" \
+          python3 "$GITHUB_WORKSPACE/device/scripts/data-seed-adapter.py" adapt-skip-setup "$PWD" \
             --target "$OS_TARGET"
           python3 scripts/t610yp-seed-data-skip-setup.py \
             build/owner-data-fixture/owner-data.dbr \
