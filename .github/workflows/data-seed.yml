@@ -6,7 +6,7 @@ on:
       os_target:
         description: System image used to prepare Data
         required: true
-        default: ipados-17.7.11
+        default: iphone-x-16.7.16
         type: choice
         options:
           - ipados-17.7.11
@@ -81,13 +81,10 @@ jobs:
           esac
           curl --fail --location --retry 3 --connect-timeout 30 \
             "$url" --output "$RUNNER_TEMP/restore.ipsw"
-          if [ "$OS_TARGET" = iphone-17.7 ]; then
+          if [ "$OS_TARGET" != ipados-17.7.11 ]; then
             python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" extract \
-              "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg
-            echo "OS_IMAGE=.cache/firmware/target-volumes/iphone-os.dmg" >> "$GITHUB_ENV"
-          elif [ "$OS_TARGET" = iphone-x-16.7.16 ]; then
-            python3 "$GITHUB_WORKSPACE/device/scripts/ios16-seed.py" extract \
-              "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg
+              "$RUNNER_TEMP/restore.ipsw" .cache/firmware/target-volumes/iphone-os.dmg \
+              --target "$OS_TARGET"
             echo "OS_IMAGE=.cache/firmware/target-volumes/iphone-os.dmg" >> "$GITHUB_ENV"
           else
             python3 scripts/extract-target-volume.py OS --ipsw "$RUNNER_TEMP/restore.ipsw"
@@ -97,33 +94,29 @@ jobs:
               "$os_image" | shasum -a 256 --check
             echo "OS_IMAGE=$os_image" >> "$GITHUB_ENV"
           fi
+          rm "$RUNNER_TEMP/restore.ipsw"
 
       - name: Create APFS Data seed
         env:
           OS_TARGET: ${{ inputs.os_target }}
         run: |
           set -euo pipefail
-          mountpoint="$PWD/.cache/firmware/target-volumes/os-mount"
-          mkdir -p "$mountpoint"
-          attached=0
-          cleanup() {
-            if [ "$attached" = 1 ]; then
-              hdiutil detach "$mountpoint" || hdiutil detach -force "$mountpoint"
-            fi
-          }
-          trap cleanup EXIT
-          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" \
-            "$OS_IMAGE"
-          attached=1
-          if [ "$OS_TARGET" = iphone-17.7 ]; then
-            python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" adapt "$PWD"
-            python3 scripts/t610yp-iphone-prepare-owner-data-fixture.py
-          elif [ "$OS_TARGET" = iphone-x-16.7.16 ]; then
-            python3 "$GITHUB_WORKSPACE/device/scripts/ios16-seed.py" adapt "$PWD"
-            python3 scripts/t610yp-ios16-prepare-owner-data-fixture.py
+          if [ "$OS_TARGET" != ipados-17.7.11 ]; then
+            python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" prepare "$PWD" \
+              "$OS_IMAGE" --target "$OS_TARGET"
           else
+            mountpoint="$PWD/.cache/firmware/target-volumes/os-mount"
+            mkdir -p "$mountpoint"
+            hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$OS_IMAGE"
+            cleanup() {
+              hdiutil detach "$mountpoint" || hdiutil detach -force "$mountpoint"
+            }
+            trap cleanup EXIT
             python3 scripts/prepare-owner-data-fixture.py
+            trap - EXIT
+            cleanup
           fi
+          rm "$OS_IMAGE"
 
       - name: Pack and grow Data seed
         env:
@@ -140,26 +133,6 @@ jobs:
           cd build/owner-data-fixture
           shasum -a 256 owner-data.dbr seed.json grow-report.json > SHA256SUMS
 
-      - name: Generate skip-Setup Data seed
-        if: ${{ inputs.skip_setup }}
-        env:
-          OS_TARGET: ${{ inputs.os_target }}
-        run: |
-          set -euo pipefail
-          skip_script=scripts/seed-data-skip-setup.py
-          if [ "$OS_TARGET" = iphone-17.7 ]; then
-            skip_script=scripts/t610yp-iphone-seed-data-skip-setup.py
-          elif [ "$OS_TARGET" = iphone-x-16.7.16 ]; then
-            skip_script=scripts/t610yp-ios16-seed-data-skip-setup.py
-          fi
-          python3 "$skip_script" \
-            build/owner-data-fixture/owner-data.dbr \
-            build/owner-data-fixture/owner-data-skip-setup.dbr \
-            --no-auto-dim
-          cd build/owner-data-fixture
-          shasum -a 256 owner-data-skip-setup.dbr \
-            owner-data-skip-setup.json > SKIP-SETUP-SHA256SUMS
-
       - name: Upload Data seed
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -171,6 +144,22 @@ jobs:
             unixnu/build/owner-data-fixture/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
+
+      - name: Generate skip-Setup Data seed
+        if: ${{ inputs.skip_setup }}
+        env:
+          OS_TARGET: ${{ inputs.os_target }}
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/device/scripts/iphone17-seed.py" adapt-skip-setup "$PWD" \
+            --target "$OS_TARGET"
+          python3 scripts/t610yp-seed-data-skip-setup.py \
+            build/owner-data-fixture/owner-data.dbr \
+            build/owner-data-fixture/owner-data-skip-setup.dbr \
+            --no-auto-dim
+          cd build/owner-data-fixture
+          shasum -a 256 owner-data-skip-setup.dbr \
+            owner-data-skip-setup.json > SKIP-SETUP-SHA256SUMS
 
       - name: Upload skip-Setup Data seed
         if: ${{ inputs.skip_setup }}
